@@ -57,3 +57,10 @@ The generated `AGENTS.md` and `CLAUDE.md` are deliberately not committed, and
 therefore show up as untracked files in `git status` in every repository. That
 is expected — the context is rendered per workspace, so committing it would
 bake one developer's absolute paths into the repository.
+
+A repository that already tracks its own `AGENTS.md` is the one case to handle
+by hand. `zpr-dev` will not overwrite a file it did not generate — `sync` prints
+`refusing to overwrite ...` and `validate` fails — because doing so silently
+destroys conventions nothing else records. Rename that file to
+`AGENTS.repo.md`, which generation appends under a "Repository-Specific
+Context" heading instead of replacing, and stop tracking `AGENTS.md`/`CLAUDE.md`.
