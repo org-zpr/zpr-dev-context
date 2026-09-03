@@ -147,6 +147,19 @@ service rejects a bad HMAC or a stale timestamp. The API being reachable only
 over the ZPRnet is not treated as sufficient — the connection's owner is not
 assumed to be the caller.
 
+**Decision (bootstrap era, zpr-visaservice#324):** `user.zpr.authority` is
+installed by the visa service whenever a trusted service returns at least one
+`user.*` attribute for an actor, valued with that service's source id and
+expiring with the returned attributes. This is deliberately weaker than the
+namespaced-authority invariant of zpr-compiler#144 ("installed exactly when a
+live *authentication* exists for that namespace"): the device authenticated,
+and a trusted service attached a user record by lookup. Until an interactive
+user authentication method (e.g. OIDC) lands, a trusted-service lookup is the
+only way a user exists in ZPR, so the vending service *is* the authority
+asserting that user identity. A device with no user record in any trusted
+service still gets no `user.zpr.authority` and does not match a bare
+`allow users ...` rule.
+
 ---
 
 ## Threat model
