@@ -42,6 +42,7 @@ paths, so they can be opened directly.
 | Changing routing, topology, or address assignment | `docs/SYSTEM_OVERVIEW.md`, `docs/ZDP.md`, `docs/VISA_SERVICE.md` |
 | Changing anything cryptographic, or touching the enforcement path | `docs/SECURITY_MODEL.md` |
 | Writing or reviewing a policy file | `docs/ZPL.md` |
+| Writing or reviewing Rust code | `skills/rust-coding-guidelines/SKILL.md` |
 
 Two rules that apply to every task above:
 
