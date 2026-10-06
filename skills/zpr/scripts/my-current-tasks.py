@@ -6,21 +6,28 @@ Current iteration = the iteration in the Iteration field configuration whose
 
 The list holds every current-iteration item assigned to the user, plus every
 UNASSIGNED current-iteration issue that is not yet started (Status "Backlog",
-"Ready" or no Status), since the user may claim those. An item assigned to someone else is
-never listed. Each item is put in one category:
+"Ready" or no Status), since the user may claim those. An item assigned to
+someone else is never listed. Each item is put in the first category it fits:
 
-  pickable        open issue, Status "Ready", unassigned or assigned to the user.
-                  Status "Ready" is the team's green-light: only these may be
-                  started (see "Picking up a task" in ../SKILL.md).
+  umbrella        open issue that has sub-issues. A container for work, never
+                  itself picked up, whatever its Status.
+  pickable        open issue, Status "Ready", every blocker closed, unassigned
+                  or assigned to the user. Status "Ready" is the team's
+                  green-light: only these may be started (see "Picking up a
+                  task" in ../SKILL.md).
+  pre-authorized  as pickable, but some issue in its "blocked by" list is still
+                  open. Held, and becomes pickable once the last blocker closes.
   awaiting-ready  open issue in "Backlog" or with no Status. Filed into the
                   iteration but not green-lit yet; listed so a forgotten one is
                   noticed.
   mine            anything else assigned to the user (in progress, in review,
                   done, pull requests).
 
-Pickable items sort first: Priority (P0 before P1 before P2 before none), then
-issues explicitly assigned to the user before unassigned ones, then repo and
-number.
+Within a category items sort by Priority (P0 before P1 before P2 before none),
+then issues explicitly assigned to the user before unassigned ones, then
+umbrella order: sub-issues of the oldest umbrella first, in that umbrella's
+sub-issue order (which the team keeps in intended execution order), then issues
+with no umbrella. Repo and number break any remaining tie.
 
 Usage:
   python3 my-current-tasks.py            # human-readable, assignee = authenticated gh user
@@ -75,6 +82,12 @@ query($org:String!, $num:Int!, $cursor:String) {
             ... on Issue {
               number title url state repository { name }
               assignees(first:10) { nodes { login } }
+              subIssuesSummary { total }
+              blockedBy(first:20) { nodes { number state repository { name } } }
+              parent {
+                number createdAt repository { name }
+                subIssues(first:50) { nodes { number repository { name } } }
+              }
             }
             ... on PullRequest {
               number title url state repository { name }
@@ -158,12 +171,37 @@ def field_values(node):
 BACKLOG = "Backlog"
 READY = "Ready"
 NOT_STARTED = (None, BACKLOG, READY)
-CATEGORY_ORDER = {"pickable": 0, "awaiting-ready": 1, "mine": 2}
+CATEGORY_ORDER = {"pickable": 0, "pre-authorized": 1, "awaiting-ready": 2,
+                  "umbrella": 3, "mine": 4}
+
+
+def ref(content):
+    """Return the "repo#number" reference of an issue-like GraphQL node."""
+    return f"{(content.get('repository') or {}).get('name')}#{content.get('number')}"
+
+
+def umbrella_info(content):
+    """Return (umbrella ref, umbrella createdAt, position in its sub-issues) or Nones.
+
+    Position is the issue's index in the umbrella's sub-issue list; the team
+    keeps that list in intended execution order.
+    """
+    parent = content.get("parent")
+    if not parent:
+        return None, None, None
+    siblings = [ref(n) for n in (parent.get("subIssues") or {}).get("nodes", [])]
+    me = ref(content)
+    position = siblings.index(me) if me in siblings else len(siblings)
+    return ref(parent), parent.get("createdAt"), position
 
 
 def categorize(item):
     """Return the category of a selected item (see the module docstring)."""
     is_open_issue = item["type"] == "Issue" and item["state"] == "OPEN"
+    if is_open_issue and item["is_umbrella"]:
+        return "umbrella"
+    if is_open_issue and item["status"] == READY and item["blocked_by"]:
+        return "pre-authorized"
     if is_open_issue and item["status"] == READY:
         return "pickable"
     if is_open_issue and item["status"] in (None, BACKLOG):
@@ -172,11 +210,15 @@ def categorize(item):
 
 
 def sort_key(item):
-    """Category, then Priority (unset last), then assigned-to-user first, then repo/number."""
+    """Category, Priority (unset last), assigned-to-user first, umbrella order, repo/number."""
     return (
         CATEGORY_ORDER[item["category"]],
         item["priority"] or "P~",  # "P~" sorts after every "P<digit>"
         not item["assigned_to_user"],
+        item["umbrella"] is None,  # issues under an umbrella first
+        item["umbrella_created"] or "",  # oldest umbrella first
+        item["umbrella"] or "",
+        item["umbrella_position"] or 0,
         item["repo"] or "",
         item["number"] or 0,
     )
@@ -215,7 +257,13 @@ def select(nodes, user, iteration):
             "iteration": item_iteration,
             "type": content.get("__typename"),
             "assigned_to_user": user in assignees,
+            "is_umbrella": (content.get("subIssuesSummary") or {}).get("total", 0) > 0,
+            # Only open blockers hold an issue back.
+            "blocked_by": [ref(b) for b in (content.get("blockedBy") or {}).get("nodes", [])
+                           if b.get("state") == "OPEN"],
         }
+        item["umbrella"], item["umbrella_created"], item["umbrella_position"] = \
+            umbrella_info(content)
         item["category"] = categorize(item)
         matches.append(item)
     matches.sort(key=sort_key)
@@ -270,9 +318,13 @@ def main():
         print("  (nothing assigned or pickable)")
     for m in matches:
         owner = "assigned" if m["assigned_to_user"] else "unassigned"
-        print(f"  {m['category']:<13} [{m['status'] or 'no status'}] [{m['priority'] or '-'}] "
+        print(f"  {m['category']:<14} [{m['status'] or 'no status'}] [{m['priority'] or '-'}] "
               f"({owner}) {m['repo']}#{m['number']} {m['title']}")
         print(f"      {m['url']}")
+        if m["umbrella"]:
+            print(f"      under {m['umbrella']}, position {m['umbrella_position'] + 1}")
+        if m["blocked_by"]:
+            print(f"      blocked by {', '.join(m['blocked_by'])} -- starts when they close")
     if want_marker:
         marker = retry_marker(matches)
         if marker:

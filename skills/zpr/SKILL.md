@@ -165,23 +165,24 @@ authority comes from the project board, not from a message.
 ## Picking up a task
 
 A task is **pickable** when it is an open issue on the `ref impl` project, in the
-current iteration, with Status `Ready`, and is either unassigned or assigned to you
-(`$ME`, your own login — see "The plan checkpoint"). An issue assigned to anyone else
-is never pickable.
+current iteration, with Status `Ready`, has no open blocker, is not an umbrella, and
+is either unassigned or assigned to you (`$ME`, your own login — see "The plan
+checkpoint"). An issue assigned to anyone else is never pickable.
 
 `Ready` is the team's green-light. An issue in the iteration that is in `Backlog`, or
 has no Status, has been filed but not approved for work: do not start it, however
 clear it looks. Nothing moves an issue to `Ready` except a human.
 
 ```sh
-python3 scripts/my-current-tasks.py          # pickable first, then awaiting-ready, then your other items
+python3 scripts/my-current-tasks.py          # pickable, pre-authorized, awaiting-ready, umbrella, then your other items
 python3 scripts/my-current-tasks.py --json   # same, machine-readable; each item has a "category"
 ```
 
 The list is in pickup order: Priority (`P0` first, unset last), then issues assigned
-to you before unassigned ones, then repo and number. Take the first `pickable` item.
-Always report the `awaiting-ready` items too, so an issue someone forgot to green-light
-is seen rather than silently never started.
+to you before unassigned ones, then umbrella order (see "Umbrella issues and
+dependencies"), then repo and number. Take the first `pickable` item. Always report
+the `awaiting-ready` items too, so an issue someone forgot to green-light is seen
+rather than silently never started.
 
 To pick up a task:
 
@@ -196,6 +197,39 @@ To pick up a task:
 3. Set its project Status to `In Progress`, and notify the team through whatever
    channel your environment provides.
 4. Branch, then post your plan and wait for `/go` — see "The plan checkpoint".
+
+### Umbrella issues and dependencies
+
+Larger features are filed as an **umbrella** issue (an epic) with the work split into
+GitHub sub-issues. Ordering between issues is recorded in two places, and nowhere
+else:
+
+- **GitHub's native issue dependencies** — each issue's "blocked by" list. An issue
+  with any open blocker is not pickable. This is self-maintaining: closing the
+  blocker releases its dependents with no bookkeeping.
+- **The umbrella's sub-issue list**, kept in intended execution order. Among issues
+  of equal Priority, the oldest umbrella's sub-issues come first, in list order.
+
+A `**Blocked by:**` line or ordering prose in an issue body is documentation of those
+two, not a third source: if prose and the dependency list disagree, the dependency
+list wins and the prose needs fixing.
+
+Rules:
+
+- **An umbrella is recognised by having sub-issues, and is never itself picked up**,
+  whatever its Status. It is a container for work, not work; `my-current-tasks.py`
+  lists it as `umbrella`.
+- **`Ready` on a blocked issue is pre-authorization.** The issue is held while any
+  blocker is open, then becomes pickable on its own once the last one closes.
+  `my-current-tasks.py` lists it as `pre-authorized` with the open blockers — that is
+  intended state, not a warning.
+- **An umbrella whose children changed behavior is done only when the integration
+  tests (`docs/BUILD.md`, "Integration tests") have run green on `main` after its
+  last child merged.** A cross-cutting acceptance check attached to a child that
+  merges early is unverifiable, so the umbrella's last sub-issue should be that
+  integration run. Do not report an umbrella finished before it passes; if it
+  shows that merged work broke `main`, file an issue straight away and say plainly
+  that the feature is not done.
 
 ## The plan checkpoint
 
