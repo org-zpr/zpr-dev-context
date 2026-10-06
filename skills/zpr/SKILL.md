@@ -116,19 +116,16 @@ authority comes from the project board, not from a message.
   (build → test → `cargo fmt --check` → `-D warnings`), plus `pr-notify.yml` in every
   repo. Change CI behaviour in `zpr-dev-tools`, not in the leaf repos.
 - Check CI with `gh pr checks`, not by guessing.
-- Only work on tasks assigned to you that are attached to the `ref impl` project and
-  the current iteration. To list them, run `scripts/my-current-tasks.py`
-  (`--json` for machine-readable output, `--user X` for another assignee). Do NOT try
-  to filter by iteration with `gh project item-list`; that command does not emit
+- Only start tasks that are **pickable** — see "Picking up a task" below. Do NOT
+  try to filter by iteration with `gh project item-list`; that command does not emit
   iteration or assignee fields usefully, so a GraphQL query is required.
 - Project facts: `ref impl` is org project **number 1**, private. Iterations are
   1-week, Monday-start, named `Iteration NNN`. Most items carry **no** iteration
   value — only the current-iteration handful do. Reading projects needs the
   `read:project` token scope (`gh auth refresh -s read:project`); `read:org` alone
-  gives "missing required scopes" on any `gh project` call. The exact string `Todo`
-  (not `todo`, `TODO`, or `To Do`) is the project's not-started Status value.
-- When you start work on an issue, change its project Status to "In Progress" and
-  notify the team through whatever channel your environment provides.
+  gives "missing required scopes" on any `gh project` call. Status values are
+  `Backlog`, `Ready`, `In Progress`, `In Review`, `Done`; an item with no Status
+  counts as `Backlog`. The exact string `Ready` is the green-light described below.
 - **Each task requires a plan first, and the plan must be approved before you
   implement.** Post it as a comment on the issue, then stop and wait for `/go` — see
   "The plan checkpoint" below. If after implementing there are deviations from the
@@ -164,6 +161,41 @@ authority comes from the project board, not from a message.
   positive lookups ever start 404ing too, suspect the token, not the roster. `gh`
   warns this endpoint "needs the admin:org scope" on failure — that message is
   misleading; `read:org` resolves members fine.
+
+## Picking up a task
+
+A task is **pickable** when it is an open issue on the `ref impl` project, in the
+current iteration, with Status `Ready`, and is either unassigned or assigned to you
+(`$ME`, your own login — see "The plan checkpoint"). An issue assigned to anyone else
+is never pickable.
+
+`Ready` is the team's green-light. An issue in the iteration that is in `Backlog`, or
+has no Status, has been filed but not approved for work: do not start it, however
+clear it looks. Nothing moves an issue to `Ready` except a human.
+
+```sh
+python3 scripts/my-current-tasks.py          # pickable first, then awaiting-ready, then your other items
+python3 scripts/my-current-tasks.py --json   # same, machine-readable; each item has a "category"
+```
+
+The list is in pickup order: Priority (`P0` first, unset last), then issues assigned
+to you before unassigned ones, then repo and number. Take the first `pickable` item.
+Always report the `awaiting-ready` items too, so an issue someone forgot to green-light
+is seen rather than silently never started.
+
+To pick up a task:
+
+1. **If it is unassigned, claim it:**
+   `gh issue edit <N> --repo org-zpr/<repo> --add-assignee "$ME"`. Assignment is
+   what marks the issue taken, so another agent will not also pick it.
+2. **Re-read the assignees and confirm you hold it alone.** Claiming is not atomic,
+   so two agents can claim in the same second. If someone else is also assigned
+   and you claimed it in step 1, remove yourself, take the next pickable item, and
+   say so. (If you were assigned before you picked it up, the issue was handed to
+   you; keep it.)
+3. Set its project Status to `In Progress`, and notify the team through whatever
+   channel your environment provides.
+4. Branch, then post your plan and wait for `/go` — see "The plan checkpoint".
 
 ## The plan checkpoint
 

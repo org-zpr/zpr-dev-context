@@ -1,8 +1,26 @@
 #!/usr/bin/env python3
-"""List org-zpr "ref impl" (project #1) items assigned to a user in the CURRENT iteration.
+"""List a user's org-zpr "ref impl" (project #1) tasks in the CURRENT iteration.
 
 Current iteration = the iteration in the Iteration field configuration whose
 [startDate, startDate+duration) window contains today.
+
+The list holds every current-iteration item assigned to the user, plus every
+UNASSIGNED current-iteration issue that is not yet started (Status "Backlog",
+"Ready" or no Status), since the user may claim those. An item assigned to someone else is
+never listed. Each item is put in one category:
+
+  pickable        open issue, Status "Ready", unassigned or assigned to the user.
+                  Status "Ready" is the team's green-light: only these may be
+                  started (see "Picking up a task" in ../SKILL.md).
+  awaiting-ready  open issue in "Backlog" or with no Status. Filed into the
+                  iteration but not green-lit yet; listed so a forgotten one is
+                  noticed.
+  mine            anything else assigned to the user (in progress, in review,
+                  done, pull requests).
+
+Pickable items sort first: Priority (P0 before P1 before P2 before none), then
+issues explicitly assigned to the user before unassigned ones, then repo and
+number.
 
 Usage:
   python3 my-current-tasks.py            # human-readable, assignee = authenticated gh user
@@ -10,11 +28,11 @@ Usage:
   python3 my-current-tasks.py --user X   # different assignee login
   python3 my-current-tasks.py --retry-marker
         Append a volatile "PENDING-TODO ... tick=<epoch>" line IFF at least one
-        item has Status "Todo". Intended for output-hash-based monitors that
+        item is pickable. Intended for output-hash-based monitors that
         suppress a run when the output is unchanged: without the marker, a run
-        that fails after the hash was recorded would leave the Todo item
+        that fails after the hash was recorded would leave the pickable item
         unstarted and never retried. With it, output keeps changing every tick
-        while a Todo is outstanding. Idle (no Todo) output stays byte-stable.
+        while a pickable item is outstanding. Idle output stays byte-stable.
         Off by default so interactive runs stay clean.
 
 Requires: gh authenticated with scopes read:org, read:project, repo.
@@ -121,32 +139,104 @@ def fetch_items():
 
 
 def field_values(node):
-    status, iteration = None, None
+    """Return the (Status, Iteration, Priority) values of a project item; None if unset."""
+    status, iteration, priority = None, None, None
     for fv in node.get("fieldValues", {}).get("nodes", []):
         fname = (fv.get("field") or {}).get("name")
         if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" and fname == "Status":
             status = fv.get("name")
+        elif fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" and fname == "Priority":
+            priority = fv.get("name")
         elif fv.get("__typename") == "ProjectV2ItemFieldIterationValue" and fname == "Iteration":
             iteration = fv.get("title")
-    return status, iteration
+    return status, iteration, priority
+
+
+# Not-started Status values. Only the exact string "Ready" is the green-light;
+# renaming that project column silently stops all pickup. No Status counts as
+# Backlog.
+BACKLOG = "Backlog"
+READY = "Ready"
+NOT_STARTED = (None, BACKLOG, READY)
+CATEGORY_ORDER = {"pickable": 0, "awaiting-ready": 1, "mine": 2}
+
+
+def categorize(item):
+    """Return the category of a selected item (see the module docstring)."""
+    is_open_issue = item["type"] == "Issue" and item["state"] == "OPEN"
+    if is_open_issue and item["status"] == READY:
+        return "pickable"
+    if is_open_issue and item["status"] in (None, BACKLOG):
+        return "awaiting-ready"
+    return "mine"
+
+
+def sort_key(item):
+    """Category, then Priority (unset last), then assigned-to-user first, then repo/number."""
+    return (
+        CATEGORY_ORDER[item["category"]],
+        item["priority"] or "P~",  # "P~" sorts after every "P<digit>"
+        not item["assigned_to_user"],
+        item["repo"] or "",
+        item["number"] or 0,
+    )
+
+
+def select(nodes, user, iteration):
+    """Pick the current-iteration items listed for `user` from raw project items.
+
+    Keeps items assigned to `user`, and unassigned issues that are not yet
+    started. Items assigned to anyone else are dropped: they are someone else's
+    work even when green-lit.
+    """
+    matches = []
+    for node in nodes:
+        content = node.get("content") or {}
+        assignees = [a["login"] for a in (content.get("assignees") or {}).get("nodes", [])]
+        status, item_iteration, priority = field_values(node)
+        if item_iteration != iteration:
+            continue
+        unassigned_unstarted = (
+            not assignees
+            and content.get("__typename") == "Issue"
+            and content.get("state") == "OPEN"
+            and status in NOT_STARTED
+        )
+        if user not in assignees and not unassigned_unstarted:
+            continue
+        item = {
+            "number": content.get("number"),
+            "title": content.get("title"),
+            "url": content.get("url"),
+            "state": content.get("state"),
+            "repo": (content.get("repository") or {}).get("name"),
+            "status": status,
+            "priority": priority,
+            "iteration": item_iteration,
+            "type": content.get("__typename"),
+            "assigned_to_user": user in assignees,
+        }
+        item["category"] = categorize(item)
+        matches.append(item)
+    matches.sort(key=sort_key)
+    return matches
 
 
 def retry_marker(matches):
-    """Volatile line emitted only while at least one item is in Todo.
+    """Volatile line emitted only while at least one item is pickable.
 
     Forces an output-hash monitor to differ on every tick so a tick that
     failed to start the work is retried on the next one. Disappears (restoring
-    a stable hash) as soon as nothing is in Todo. Note only the exact string
-    "Todo" fires it — renaming that project column silently disables it.
+    a stable hash) as soon as nothing is pickable.
     """
-    todo = [m for m in matches if (m.get("status") or "") == "Todo"]
-    if not todo:
+    pickable = [m for m in matches if m["category"] == "pickable"]
+    if not pickable:
         return None
-    ids = ",".join(f"{m['repo']}#{m['number']}" for m in todo)
+    ids = ",".join(f"{m['repo']}#{m['number']}" for m in pickable)
     tick = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     return (
-        f"PENDING-TODO {len(todo)} [{ids}] tick={tick}"
-        "  (volatile line: forces re-check until these leave Todo; not a change signal)"
+        f"PENDING-TODO {len(pickable)} [{ids}] tick={tick}"
+        "  (volatile line: forces re-check until these leave Ready; not a change signal)"
     )
 
 
@@ -163,27 +253,7 @@ def main():
         print("No current iteration matches today's date.", file=sys.stderr)
         sys.exit(2)
 
-    matches = []
-    for node in fetch_items():
-        content = node.get("content") or {}
-        assignees = [a["login"] for a in (content.get("assignees") or {}).get("nodes", [])]
-        if user not in assignees:
-            continue
-        status, iteration = field_values(node)
-        if iteration != cur:
-            continue
-        matches.append({
-            "number": content.get("number"),
-            "title": content.get("title"),
-            "url": content.get("url"),
-            "state": content.get("state"),
-            "repo": (content.get("repository") or {}).get("name"),
-            "status": status,
-            "iteration": iteration,
-            "type": content.get("__typename"),
-        })
-
-    matches.sort(key=lambda m: (m["repo"] or "", m["number"] or 0))
+    matches = select(fetch_items(), user, cur)
 
     if as_json:
         payload = {
@@ -195,11 +265,13 @@ def main():
         print(json.dumps(payload, indent=2))
         return
 
-    print(f"{cur} ({start} -> {end})  assignee={user}  items={len(matches)}")
+    print(f"{cur} ({start} -> {end})  user={user}  items={len(matches)}")
     if not matches:
-        print("  (nothing assigned)")
+        print("  (nothing assigned or pickable)")
     for m in matches:
-        print(f"  [{m['status'] or 'no status'}] {m['repo']}#{m['number']} {m['title']}")
+        owner = "assigned" if m["assigned_to_user"] else "unassigned"
+        print(f"  {m['category']:<13} [{m['status'] or 'no status'}] [{m['priority'] or '-'}] "
+              f"({owner}) {m['repo']}#{m['number']} {m['title']}")
         print(f"      {m['url']}")
     if want_marker:
         marker = retry_marker(matches)
